@@ -285,8 +285,48 @@ async function overpass(q){
   }
   throw lastErr;
 }
+/* Primary source: weekly-built area files in this repo (lanes/). Overpass is only a fallback. */
+let staticIdx;                                    // undefined = not checked yet, null = not available
+const staticLoaded=new Set(store.get('lt_scells',[]));
+async function loadIndex(){
+  try{
+    const r=await fetch('lanes/index.json',{cache:'no-cache'});if(!r.ok)throw 0;
+    const j=await r.json();
+    if(store.get('lt_built',null)!==j.built){       // new weekly data: drop the old cache
+      ways.clear();loadedCells.clear();staticLoaded.clear();laneLayer.clearLayers();drawn.clear();
+      store.set('lt_ways3',[]);store.set('lt_cells3',[]);store.set('lt_scells',[]);store.set('lt_built',j.built);
+    }
+    store.set('lt_index',j);staticIdx=j;
+  }catch(e){staticIdx=store.get('lt_index',null)}   // offline: use the last index we saw
+  if(staticIdx)staticIdx.set=new Set(staticIdx.cells);
+}
+async function loadStatic(){
+  const C=staticIdx.cell,b=map.getBounds().pad(0.2),need=[];
+  for(let la=Math.floor(b.getSouth()/C);la<=Math.floor(b.getNorth()/C);la++)
+    for(let lo=Math.floor(b.getWest()/C);lo<=Math.floor(b.getEast()/C);lo++){
+      const k=la+'_'+lo;if(staticIdx.set.has(k)&&!staticLoaded.has(k))need.push(k)}
+  drawWays();
+  if(!need.length)return;
+  fetching=true;laneStatus('Loading lanes…');
+  const res=await Promise.allSettled(need.map(k=>fetch('lanes/'+k+'.json').then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})));
+  let failed=0;
+  res.forEach((r,i)=>{
+    if(r.status!=='fulfilled'){failed++;return}
+    for(const [id,tags,g] of r.value){
+      if(ways.has(id))continue;
+      const lats=g.map(p=>p[0]),lons=g.map(p=>p[1]);
+      ways.set(id,{id,cls:classify(tags),geom:g,tags,bb:[[Math.min(...lats),Math.min(...lons)],[Math.max(...lats),Math.max(...lons)]]});
+    }
+    staticLoaded.add(need[i]);
+  });
+  if(!store.set('lt_ways3',[...ways.values()])||!store.set('lt_scells',[...staticLoaded])){store.set('lt_ways3',[]);store.set('lt_scells',[])}
+  fetching=false;drawWays();
+  if(failed)laneStatus('Some lanes didn\'t load – tap to retry',true);
+}
 async function loadLanes(force){
   if(!$('optLanes').checked||map.getZoom()<11||fetching)return drawWays();
+  if(staticIdx===undefined){fetching=true;await loadIndex();fetching=false}
+  if(staticIdx)return loadStatic();
   const b=map.getBounds();const cells=[];
   for(let la=Math.floor(b.getSouth()/CELL);la<=Math.floor(b.getNorth()/CELL);la++)
     for(let lo=Math.floor(b.getWest()/CELL);lo<=Math.floor(b.getEast()/CELL);lo++)
@@ -314,7 +354,7 @@ async function loadLanes(force){
     laneStatus('Couldn\'t load lanes – tap to retry ('+(err.message||'no reply').slice(0,40)+')',true);
   }
 }
-$('btnReloadLanes').onclick=()=>{ways.clear();loadedCells.clear();store.set('lt_ways3',[]);store.set('lt_cells3',[]);
+$('btnReloadLanes').onclick=()=>{ways.clear();loadedCells.clear();staticLoaded.clear();staticIdx=undefined;store.set('lt_ways3',[]);store.set('lt_cells3',[]);store.set('lt_scells',[]);
   laneLayer.clearLayers();drawn.clear();$('menu').hidden=true;loadLanes(true)};
 $('loading').onclick=()=>{if($('loading').classList.contains('err'))loadLanes(true)};
 let mvT;map.on('moveend',()=>{clearTimeout(mvT);mvT=setTimeout(loadLanes,600)});

@@ -1,0 +1,57 @@
+name: Build lane data
+
+# Rebuilds the byway/UCR files the app loads, from OpenStreetMap (via Geofabrik).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"   # every Monday, early morning
+  push:
+    paths:
+      - tools/build_lanes.py
+      - .github/workflows/build-lanes.yml
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install osmium
+        run: sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+
+      - name: Download England and Wales map data
+        run: curl -fsSL -o england.osm.pbf https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf && curl -fsSL -o wales.osm.pbf https://download.geofabrik.de/europe/united-kingdom/wales-latest.osm.pbf
+
+      - name: Extract byways and unclassified roads
+        run: |
+          for f in england wales; do
+            osmium tags-filter $f.osm.pbf \
+              w/designation=byway_open_to_all_traffic,restricted_byway,unclassified_county_road,unclassified_country_road,unclassified_highway,unclassified_road,byway,public_byway \
+              w/highway=byway w/prow_ref \
+              -o $f-lanes.osm.pbf --overwrite
+          done
+          osmium merge england-lanes.osm.pbf wales-lanes.osm.pbf -o lanes.osm.pbf --overwrite
+          osmium export lanes.osm.pbf -f geojsonseq -a id --geometry-types=linestring -o lanes.geojsonseq --overwrite
+
+      - name: Split into area files
+        run: python3 tools/build_lanes.py lanes.geojsonseq lanes
+
+      - name: Commit if changed
+        run: |
+          git config user.name "lanetrack-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lanes
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Update lane data"
+          git push
+
+      - name: Redeploy the site
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" || true
