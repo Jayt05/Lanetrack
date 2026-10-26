@@ -136,6 +136,7 @@ input[type=file]{display:none}
     <i style="background:var(--track)"></i><span>Your recorded track</span>
     <i style="background:var(--route)"></i><span>Route you're following</span>
   </div>
+  <div class="row" style="margin:8px 0"><button id="btnReloadLanes">Reload lane data</button></div>
   <p class="note">Lane data is from OpenStreetMap and can be out of date. Check for TROs before riding. Tap a lane for its details.</p>
   <h3>Guidance</h3>
   <label class="tog">Off-route warning at <select id="optThresh"><option>20</option><option selected>30</option><option>50</option><option>100</option></select> m</label>
@@ -222,8 +223,8 @@ const laneLayer=L.layerGroup().addTo(map);
 const ways=new Map();         // id -> {cls, geom, tags}
 const drawn=new Map();        // id -> [casing, line, label?]
 const CELL=0.1;               // degrees
-const loadedCells=new Set(store.get('lt_cells2',[]));
-(store.get('lt_ways2',[])).forEach(w=>ways.set(w.id,w));
+const loadedCells=new Set(store.get('lt_cells3',[]));
+(store.get('lt_ways3',[])).forEach(w=>ways.set(w.id,w));
 const DES='byway_open_to_all_traffic|restricted_byway|unclassified_county_road|unclassified_country_road|unclassified_highway|unclassified_road|byway|public_byway';
 const MIRRORS=['https://overpass-api.de/api/interpreter','https://overpass.private.coffee/api/interpreter','https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
 function classify(t){
@@ -267,7 +268,7 @@ function drawWays(){
   // labels only above zoom 14: redraw if zoom crossed that line
   if(!fetching)laneStatus(count?count+' lane'+(count>1?'s':'')+' shown':'No byways or UCRs here');
 }
-let fetching=false,lastFail=0;
+let fetching=false,lastFail=0,lastServer='';
 async function overpass(q){
   let lastErr;
   for(const url of MIRRORS){
@@ -275,7 +276,11 @@ async function overpass(q){
       const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),45000);
       const r=await fetch(url+'?data='+encodeURIComponent(q),{signal:ctl.signal});clearTimeout(tm);
       if(!r.ok)throw new Error('HTTP '+r.status);
-      return await r.json();
+      const j=await r.json();
+      // Overpass reports timeouts and overloads as HTTP 200 with a "remark": treat that as a failure, not an empty area
+      if(!j||!Array.isArray(j.elements)||(j.remark&&/error|timed out|out of memory|rate/i.test(j.remark)))throw new Error(j&&j.remark||'Bad reply');
+      lastServer=url.split('/')[2];
+      return j;
     }catch(e){lastErr=e}
   }
   throw lastErr;
@@ -292,7 +297,7 @@ async function loadLanes(force){
   const s=Math.min(...cells.map(c=>c[0]))*CELL,n=(Math.max(...cells.map(c=>c[0]))+1)*CELL,
         w=Math.min(...cells.map(c=>c[1]))*CELL,e=(Math.max(...cells.map(c=>c[1]))+1)*CELL;
   const bbox=[s,w,n,e].map(x=>x.toFixed(4)).join(',');
-  const q=`[out:json][timeout:40];(way["designation"~"^(${DES})$"](${bbox});way["highway"="byway"](${bbox});way["highway"]["prow_ref"~"(^|[ ;])(BY|BOAT)[ .0-9]"](${bbox}););out tags geom;`;
+  const q=`[out:json][timeout:40];(way["designation"~"^(${DES})$"](${bbox});way["highway"="byway"](${bbox});way["highway"]["prow_ref"~"(^|[ ;])(BY|BOAT)[ .0-9]"](${bbox});way["highway"]["ref"~"^(BY|BOAT) ?[0-9]"](${bbox});way["highway"]["name"~"[(](BY|BOAT) ?[0-9]"](${bbox}););out tags geom;`;
   fetching=true;laneStatus('Loading lanes…');
   try{
     const j=await overpass(q);
@@ -302,13 +307,15 @@ async function loadLanes(force){
       ways.set(el.id,{id:el.id,cls:classify(el.tags||{}),geom:g,tags:el.tags||{},bb:[[Math.min(...lats),Math.min(...lons)],[Math.max(...lats),Math.max(...lons)]]})}
     cells.forEach(c=>loadedCells.add(c[0]+','+c[1]));
     // cache for offline use; drop the cache rather than fail if storage is full
-    if(!store.set('lt_ways2',[...ways.values()])||!store.set('lt_cells2',[...loadedCells])){store.set('lt_ways2',[]);store.set('lt_cells2',[])}
+    if(!store.set('lt_ways3',[...ways.values()])||!store.set('lt_cells3',[...loadedCells])){store.set('lt_ways3',[]);store.set('lt_cells3',[])}
     fetching=false;drawWays();
   }catch(err){
     fetching=false;lastFail=Date.now();drawWays();
-    laneStatus('Couldn\'t load lanes – tap to retry',true);
+    laneStatus('Couldn\'t load lanes – tap to retry ('+(err.message||'no reply').slice(0,40)+')',true);
   }
 }
+$('btnReloadLanes').onclick=()=>{ways.clear();loadedCells.clear();store.set('lt_ways3',[]);store.set('lt_cells3',[]);
+  laneLayer.clearLayers();drawn.clear();$('menu').hidden=true;loadLanes(true)};
 $('loading').onclick=()=>{if($('loading').classList.contains('err'))loadLanes(true)};
 let mvT;map.on('moveend',()=>{clearTimeout(mvT);mvT=setTimeout(loadLanes,600)});
 map.on('zoomend',()=>{laneLayer.clearLayers();drawn.clear();drawWays()});
