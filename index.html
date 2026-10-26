@@ -93,6 +93,15 @@ label.tog input{width:22px;height:22px}
 #guide:not([hidden])~#loading{top:calc(env(safe-area-inset-top,0px) + 170px)}
 .lane-label span{display:inline-block;transform:translate(-50%,-50%);color:#fff;font:700 13px var(--display);letter-spacing:.04em;padding:1px 6px;border-radius:4px;border:2px solid #fff;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.35)}
 input[type=file]{display:none}
+#plan{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:var(--panel);border-top:1px solid var(--line);box-shadow:0 -2px 12px rgba(0,0,0,.2);
+  padding:12px max(12px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 10px) max(12px,env(safe-area-inset-left,0px));display:grid;gap:10px}
+#plan b{font:700 24px/1.1 var(--display);display:block}
+#plan span{color:var(--muted);font-size:13px}
+#plan .row button{min-height:52px}
+.plan-num span{display:inline-block;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--panel);
+  border:2px solid #fff;font:700 15px/22px var(--display);text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.popbtn{min-height:36px;font-size:14px;padding:0 10px;background:var(--accent);color:#fff;box-shadow:none}
+.lane-label span{font-size:12px!important;padding:0 5px!important}
 </style>
 </head>
 <body>
@@ -118,8 +127,14 @@ input[type=file]{display:none}
   <button id="btnMenu" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </div>
 
+<div id="plan" hidden>
+  <div><b id="planDist">Tap a lane to start</b><span id="planSub"></span></div>
+  <div class="row"><button id="pUndo">Undo</button><button id="pClear">Clear</button><button id="pClose">Close</button><button id="pSave" class="primary">Save</button></div>
+</div>
+
 <div id="menu" class="sheet" hidden>
   <h2>LaneTrack</h2>
+  <div class="row"><button id="btnPlan" class="primary">Plan a route</button></div>
   <h3>Map</h3>
   <div class="row">
     <button data-base="topo">Topo</button>
@@ -128,6 +143,7 @@ input[type=file]{display:none}
   </div>
   <label class="tog"><input type="checkbox" id="optLanes" checked> Show byways &amp; UCRs</label>
   <label class="tog"><input type="checkbox" id="optNoMotor" checked> Show lanes closed to motors</label>
+  <label class="tog"><input type="checkbox" id="optLabels"> Show lane names</label>
   <div class="key">
     <i style="background:var(--boat)"></i><span>BOAT – byway open to all traffic</span>
     <i style="background:var(--ucr)"></i><span>UCR / unclassified road</span>
@@ -240,33 +256,55 @@ const NAMES={boat:'BOAT – open to all traffic',ucr:'Unclassified road (UCR)',s
 function cssVar(v){return v.startsWith('var(')?getComputedStyle(document.documentElement).getPropertyValue(v.slice(4,-1)).trim():v}
 function laneStatus(msg,err){const el=$('loading');el.textContent=msg;el.classList.toggle('err',!!err);el.hidden=!msg}
 function removeDrawn(id){drawn.get(id).forEach(l=>laneLayer.removeLayer(l));drawn.delete(id)}
+const labelLayer=L.layerGroup().addTo(map);
+const esc=v=>String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const laneRef=t=>(t.prow_ref||t.ref||'').trim();
+function laneInfo(id){
+  const w=ways.get(id),t=w.tags,rows=[['Status',NAMES[w.cls]],['Name',t.name],['Ref',laneRef(t)],['Surface',t.surface],['Track grade',t.tracktype],
+    ['Motor vehicles',t.motor_vehicle],['Conditional',t['motor_vehicle:conditional']||t['vehicle:conditional']],['Note',t.note]].filter(r=>r[1]);
+  return '<b>'+rows.map(r=>r[0]+':</b> '+esc(r[1])).join('<br><b>')+
+    '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="popbtn" onclick="planFrom('+id+')">Plan route from here</button>'+
+    '<a href="https://www.openstreetmap.org/way/'+id+'" target="_blank" rel="noopener">OSM</a></div>';
+}
+function onLaneTap(id,e){
+  if(e.originalEvent)L.DomEvent.stop(e.originalEvent);
+  if(plan){addLane(id);return}
+  L.popup().setLatLng(e.latlng).setContent(laneInfo(id)).openOn(map);
+}
+function drawLabels(visibleIds){
+  labelLayer.clearLayers();
+  if(!$('optLabels').checked||map.getZoom()<13)return;
+  // one label per lane ref: put it on the longest visible piece
+  const best=new Map();
+  for(const id of visibleIds){const w=ways.get(id),ref=laneRef(w.tags);if(!ref)continue;
+    const len=w.geom.length;if(!best.has(ref)||best.get(ref).len<len)best.set(ref,{w,len})}
+  for(const [ref,{w}] of best){
+    const mid=w.geom[Math.floor(w.geom.length/2)];
+    L.marker(mid,{interactive:false,icon:L.divIcon({className:'lane-label',html:'<span style="background:'+cssVar(STYLE[w.cls].color)+'">'+esc(ref.replace(/^[A-Z][a-z]+ (?=BY|BOAT|RB)/,''))+'</span>',iconSize:null})}).addTo(labelLayer);
+  }
+}
 function drawWays(){
   const show=$('optLanes').checked,showNo=$('optNoMotor').checked,b=map.getBounds().pad(0.3),z=map.getZoom();
-  if(!show){laneLayer.clearLayers();drawn.clear();laneStatus('');return}
-  if(z<11){laneLayer.clearLayers();drawn.clear();laneStatus('Zoom in to see lanes');return}
+  if(!show){laneLayer.clearLayers();labelLayer.clearLayers();drawn.clear();laneStatus('');return}
+  if(z<11){laneLayer.clearLayers();labelLayer.clearLayers();drawn.clear();laneStatus('Zoom in to see lanes');return}
   const w8=z>=15?9:z>=13?7:5;      // thicker lines as you zoom in
-  let count=0;
+  const vis=[];
   for(const [id,w] of ways){
     const visible=(showNo||w.cls!=='nomotor')&&w.bb&&b.intersects(L.latLngBounds(w.bb));
-    if(visible){count++;
+    if(visible){vis.push(id);
       if(drawn.has(id)&&drawn.get(id).zoomed!==w8)removeDrawn(id);
       if(!drawn.has(id)){
         const s=STYLE[w.cls],col=cssVar(s.color);
-        const casing=L.polyline(w.geom,{color:'#fff',weight:w8+5,opacity:.95,interactive:false}).addTo(laneLayer);
-        const line=L.polyline(w.geom,{color:col,weight:w8,opacity:1,dashArray:s.dashArray,lineCap:'round'}).addTo(laneLayer);
-        const t=w.tags,rows=[['Status',NAMES[w.cls]],['Name',t.name],['Ref',t.prow_ref||t.ref],['Surface',t.surface],['Track grade',t.tracktype],
-          ['Motor vehicles',t.motor_vehicle],['Conditional',t['motor_vehicle:conditional']||t['vehicle:conditional']],['Note',t.note]].filter(r=>r[1]);
-        line.bindPopup('<b>'+rows.map(r=>r[0]+':</b> '+String(r[1]).replace(/</g,'&lt;')).join('<br><b>')+'<br><a href="https://www.openstreetmap.org/way/'+id+'" target="_blank" rel="noopener">View on OSM</a>');
-        const layers=[casing,line];
-        const ref=t.prow_ref||t.ref;
-        if(z>=14&&ref){const mid=w.geom[Math.floor(w.geom.length/2)];
-          layers.push(L.marker(mid,{interactive:false,icon:L.divIcon({className:'lane-label',html:'<span style="background:'+col+'">'+String(ref).replace(/</g,'&lt;')+'</span>',iconSize:null})}).addTo(laneLayer))}
-        layers.zoomed=w8;drawn.set(id,layers);
+        // the wide white casing doubles as a bigger tap target
+        const casing=L.polyline(w.geom,{color:'#fff',weight:w8+8,opacity:.95,bubblingMouseEvents:false}).addTo(laneLayer);
+        const line=L.polyline(w.geom,{color:col,weight:w8,opacity:1,dashArray:s.dashArray,lineCap:'round',bubblingMouseEvents:false}).addTo(laneLayer);
+        casing.on('click',e=>onLaneTap(id,e));line.on('click',e=>onLaneTap(id,e));
+        const layers=[casing,line];layers.zoomed=w8;drawn.set(id,layers);
       }
     }else if(drawn.has(id))removeDrawn(id);
   }
-  // labels only above zoom 14: redraw if zoom crossed that line
-  if(!fetching)laneStatus(count?count+' lane'+(count>1?'s':'')+' shown':'No byways or UCRs here');
+  drawLabels(vis);
+  if(!fetching)laneStatus(vis.length?vis.length+' lane'+(vis.length>1?'s':'')+' shown':'No byways or UCRs here');
 }
 let fetching=false,lastFail=0,lastServer='';
 async function overpass(q){
@@ -359,6 +397,7 @@ $('btnReloadLanes').onclick=()=>{ways.clear();loadedCells.clear();staticLoaded.c
 $('loading').onclick=()=>{if($('loading').classList.contains('err'))loadLanes(true)};
 let mvT;map.on('moveend',()=>{clearTimeout(mvT);mvT=setTimeout(loadLanes,600)});
 map.on('zoomend',()=>{laneLayer.clearLayers();drawn.clear();drawWays()});
+$('optLabels').addEventListener('change',()=>drawWays());
 $('optLanes').onchange=$('optNoMotor').onchange=()=>{laneLayer.clearLayers();drawn.clear();loadLanes(true)};
 
 /* ---------- position ---------- */
@@ -514,6 +553,96 @@ function updateGuide(){
   g.wasOff=off;
 }
 
+
+/* ---------- route planner: chain lanes together, roads in between ---------- */
+let plan=null;
+const planLayer=L.layerGroup().addTo(map);
+const connCache=new Map();
+function laneChain(id){
+  // a byway is often several OSM pieces: join every connected piece with the same ref
+  const w=ways.get(id),ref=laneRef(w.tags)||(w.tags.name||'').trim();
+  let chain=w.geom.slice();const used=new Set([id]);
+  if(ref){let grew=true;
+    while(grew){grew=false;
+      for(const [oid,o] of ways){
+        if(used.has(oid))continue;
+        if((laneRef(o.tags)||(o.tags.name||'').trim())!==ref)continue;
+        const g=o.geom,st=chain[0],en=chain[chain.length-1],gs=g[0],ge=g[g.length-1];
+        if(hav(en,gs)<20)chain=chain.concat(g.slice(1));
+        else if(hav(en,ge)<20)chain=chain.concat(g.slice().reverse().slice(1));
+        else if(hav(st,ge)<20)chain=g.slice(0,-1).concat(chain);
+        else if(hav(st,gs)<20)chain=g.slice().reverse().slice(0,-1).concat(chain);
+        else continue;
+        used.add(oid);grew=true;
+      }}}
+  return {pts:chain,name:ref||NAMES[w.cls]};
+}
+function lastEnd(){const it=plan.items[plan.items.length-1];return it.pts[it.pts.length-1]}
+function addItem(item){
+  const its=plan.items,p=item.pts;
+  if(its.length===1&&its[0].type==='lane'){       // second item decides which way round the first lane goes
+    const a=its[0].pts,dE=Math.min(hav(a[a.length-1],p[0]),hav(a[a.length-1],p[p.length-1])),dS=Math.min(hav(a[0],p[0]),hav(a[0],p[p.length-1]));
+    if(dS<dE)a.reverse();
+  }
+  if(its.length&&item.type==='lane'){const e=lastEnd();if(hav(e,p[p.length-1])<hav(e,p[0]))p.reverse()}
+  its.push(item);renderPlan();
+}
+function addLane(id){const c=laneChain(id);addItem({type:'lane',name:c.name,pts:c.pts});toast('Added '+c.name+' ('+fmtDist(pathLen(c.pts))+')',1800)}
+function addPlanPoint(ll){addItem({type:'point',name:'Point',pts:[[+ll.lat.toFixed(5),+ll.lng.toFixed(5)]]})}
+async function connector(a,b){
+  if(hav(a,b)<25)return {pts:[a,b],road:true};
+  const key=a.join()+'|'+b.join();if(connCache.has(key))return connCache.get(key);
+  let res;
+  try{
+    const r=await fetch(`https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`);
+    const j=await r.json();if(j.code!=='Ok')throw 0;
+    res={pts:[a].concat(j.routes[0].geometry.coordinates.map(c=>[+c[1].toFixed(5),+c[0].toFixed(5)]),[b]),road:true};
+  }catch(e){res={pts:[a,b],road:false}}       // no route found: straight line, drawn dotted
+  connCache.set(key,res);return res;
+}
+let planSeq=0;
+async function renderPlan(){
+  const seq=++planSeq,its=plan.items;
+  if(!its.length){planLayer.clearLayers();plan.full=[];$('planDist').textContent='Tap a lane to start';
+    $('planSub').textContent='Tap lanes to add them in order. Tap the map to add a point. Roads in between are filled in.';return}
+  $('planSub').textContent='Working out roads…';
+  const parts=[];
+  for(let i=0;i<its.length;i++){
+    if(i){const e=its[i-1].pts,c=await connector(e[e.length-1],its[i].pts[0]);if(seq!==planSeq)return;parts.push({kind:c.road?'road':'gap',pts:c.pts})}
+    parts.push({kind:its[i].type,pts:its[i].pts});
+  }
+  planLayer.clearLayers();
+  const col=cssVar('var(--route)');let full=[],lane=0,road=0,gaps=0;
+  for(const p of parts){
+    if(p.kind==='lane'){L.polyline(p.pts,{color:'#fff',weight:13,interactive:false}).addTo(planLayer);L.polyline(p.pts,{color:col,weight:8,interactive:false}).addTo(planLayer);lane+=pathLen(p.pts)}
+    if(p.kind==='road'){L.polyline(p.pts,{color:col,weight:5,dashArray:'2 9',lineCap:'round',interactive:false}).addTo(planLayer);road+=pathLen(p.pts)}
+    if(p.kind==='gap'){L.polyline(p.pts,{color:cssVar('var(--nomotor)'),weight:3,dashArray:'4 6',interactive:false}).addTo(planLayer);gaps++}
+    full=full.concat(full.length?p.pts.slice(1):p.pts);
+  }
+  its.forEach((it,i)=>L.marker(it.pts[0],{interactive:false,icon:L.divIcon({className:'plan-num',html:'<span>'+(i+1)+'</span>',iconSize:null})}).addTo(planLayer));
+  plan.full=full;
+  $('planDist').textContent=fmtDist(pathLen(full))+' · '+its.length+' stop'+(its.length>1?'s':'');
+  $('planSub').textContent=fmtDist(lane)+' on lanes, '+fmtDist(road)+' on roads'+(gaps?' · '+gaps+' gap'+(gaps>1?'s':'')+' with no road route (red)':'');
+}
+function startPlan(){
+  if(rec){toast('Stop recording first');return}
+  if(guide)endGuide();
+  plan={items:[],full:[]};$('menu').hidden=true;$('controls').hidden=true;$('plan').hidden=false;map.closePopup();renderPlan();
+}
+function endPlan(){plan=null;planLayer.clearLayers();$('plan').hidden=true;$('controls').hidden=false}
+window.planFrom=id=>{map.closePopup();if(!plan)startPlan();if(plan)addLane(id)};
+map.on('click',e=>{if(plan)addPlanPoint(e.latlng)});
+$('btnPlan').onclick=startPlan;
+$('pUndo').onclick=()=>{if(plan&&plan.items.length){plan.items.pop();renderPlan()}};
+$('pClear').onclick=async()=>{if(plan&&plan.items.length&&await ask('Clear route?','Remove every stop from this route.','Clear')){plan.items=[];renderPlan()}};
+$('pClose').onclick=async()=>{if(!plan.items.length||await ask('Close without saving?','This route will be lost.','Close'))endPlan()};
+$('pSave').onclick=async()=>{
+  if(!plan||plan.full.length<2){toast('Add at least two stops');return}
+  const t={id:Date.now(),name:'Route – '+(plan.items.filter(i=>i.type==='lane').map(i=>i.name).slice(0,3).join(', ')||new Date().toLocaleDateString('en-GB')),start:Date.now()/1000,pts:plan.full.map(p=>[p[0],p[1]])};
+  saveTrip(t);endPlan();
+  if(await ask('Route saved','Start following it now? You can also find it under Saved trips.','Follow now'))startGuide(t,false);
+};
+
 /* ---------- audio alert (iOS needs a tap first) ---------- */
 let ac=null;
 function initAudio(){try{if(!ac){ac=new (window.AudioContext||window.webkitAudioContext)()}if(ac.state==='suspended')ac.resume()}catch(e){}}
@@ -524,7 +653,7 @@ function beep(){if(!ac)return;try{[0,0.25].forEach(t=>{const o=ac.createOscillat
 /* ---------- menu & settings ---------- */
 $('btnMenu').onclick=()=>{initAudio();renderTrips();$('menu').hidden=false};
 $('btnClose').onclick=()=>$('menu').hidden=true;
-['optLanes','optNoMotor','optBeep'].forEach(id=>{const v=store.get('lt_'+id,null);if(v!==null)$(id).checked=v;$(id).addEventListener('change',()=>store.set('lt_'+id,$(id).checked))});
+['optLanes','optNoMotor','optBeep','optLabels'].forEach(id=>{const v=store.get('lt_'+id,null);if(v!==null)$(id).checked=v;$(id).addEventListener('change',()=>store.set('lt_'+id,$(id).checked))});
 {const v=store.get('lt_thresh',null);if(v)$('optThresh').value=v;$('optThresh').onchange=()=>store.set('lt_thresh',$('optThresh').value)}
 
 /* ---------- resume an unfinished recording (e.g. Safari reloaded the page) ---------- */
