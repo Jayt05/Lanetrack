@@ -578,14 +578,42 @@ function laneChain(id){
   return {pts:chain,name:ref||NAMES[w.cls]};
 }
 function lastEnd(){const it=plan.items[plan.items.length-1];return it.pts[it.pts.length-1]}
-function addItem(item){
-  const its=plan.items,p=item.pts;
-  if(its.length===1&&its[0].type==='lane'){       // second item decides which way round the first lane goes
-    const a=its[0].pts,dE=Math.min(hav(a[a.length-1],p[0]),hav(a[a.length-1],p[p.length-1])),dS=Math.min(hav(a[0],p[0]),hav(a[0],p[p.length-1]));
-    if(dS<dE)a.reverse();
+function addItem(item){plan.items.push(item);renderPlan()}
+/* Work out how the stops join up. Each lane can be ridden either way; we pick the directions that
+   make the joins shortest overall, and where two lanes meet part-way along (a junction rather than
+   their ends) we cut both at the junction so you ride straight from one onto the other. */
+function closestVerts(A,B){
+  const k=Math.cos(rad(A[0][0]))*R*Math.PI/180,m=R*Math.PI/180;let best={d:Infinity,i:0,j:0};
+  for(let i=0;i<A.length;i++)for(let j=0;j<B.length;j++){
+    const d=Math.hypot((A[i][1]-B[j][1])*k,(A[i][0]-B[j][0])*m);if(d<best.d)best={d,i,j}}
+  return best;
+}
+const JOIN=30;   // metres: closer than this counts as connected
+function resolvePlan(items){
+  const n=items.length,opts=items.map(it=>it.type==='lane'?[it.pts,it.pts.slice().reverse()]:[it.pts]);
+  const touch=[];   // touch[i]: lanes i-1 and i meet somewhere along their length
+  for(let i=1;i<n;i++)touch[i]=items[i-1].type==='lane'&&items[i].type==='lane'&&closestVerts(items[i-1].pts,items[i].pts).d<JOIN;
+  const cost=(i,oa,ob)=>{const A=opts[i-1][oa],B=opts[i][ob];
+    if(touch[i]){const c=closestVerts(A,B);  // riding A from its start to the junction, then B from the junction on
+      return (c.i===0?500:0)+(c.j===B.length-1?500:0)}
+    return hav(A[A.length-1],B[0])};
+  // dynamic programming over directions
+  let dp=opts[0].map(()=>({c:0,prev:[]}));
+  for(let i=1;i<n;i++)dp=opts[i].map((_,ob)=>{let best=null;
+    dp.forEach((d,oa)=>{const c=d.c+cost(i,oa,ob);if(!best||c<best.c)best={c,prev:d.prev.concat(oa)}});return best});
+  let fin=dp.reduce((x,y,o)=>(!x||y.c<x.c)?{...y,o}:x,null);
+  const pick=fin.prev.concat(fin.o);
+  const segs=items.map((it,i)=>({type:it.type,pts:opts[i][pick[i]].slice()}));
+  // cut lanes at junctions; the last lane after a junction rides its longer side
+  for(let i=1;i<n;i++)if(touch[i]){
+    const A=segs[i-1].pts,c=closestVerts(A,segs[i].pts);
+    segs[i-1].pts=A.slice(0,Math.max(c.i,1)+1);
+    let B=segs[i].pts.slice(c.j);
+    if(i===n-1){const other=segs[i].pts.slice(0,c.j+1).reverse();if(pathLen(other)>pathLen(B))B=other}
+    if(B.length<2)B=segs[i].pts.slice(0,c.j+1).reverse();
+    segs[i].pts=B;segs[i].joined=true;
   }
-  if(its.length&&item.type==='lane'){const e=lastEnd();if(hav(e,p[p.length-1])<hav(e,p[0]))p.reverse()}
-  its.push(item);renderPlan();
+  return segs;
 }
 function addLane(id){const c=laneChain(id);addItem({type:'lane',name:c.name,pts:c.pts});toast('Added '+c.name+' ('+fmtDist(pathLen(c.pts))+')',1800)}
 function addPlanPoint(ll){addItem({type:'point',name:'Point',pts:[[+ll.lat.toFixed(5),+ll.lng.toFixed(5)]]})}
@@ -606,10 +634,12 @@ async function renderPlan(){
   if(!its.length){planLayer.clearLayers();plan.full=[];$('planDist').textContent='Tap a lane to start';
     $('planSub').textContent='Tap lanes to add them in order. Tap the map to add a point. Roads in between are filled in.';return}
   $('planSub').textContent='Working out roads…';
-  const parts=[];
-  for(let i=0;i<its.length;i++){
-    if(i){const e=its[i-1].pts,c=await connector(e[e.length-1],its[i].pts[0]);if(seq!==planSeq)return;parts.push({kind:c.road?'road':'gap',pts:c.pts})}
-    parts.push({kind:its[i].type,pts:its[i].pts});
+  const parts=[],segs=resolvePlan(its);
+  for(let i=0;i<segs.length;i++){
+    if(i){const e=segs[i-1].pts,st=segs[i].pts[0],en=e[e.length-1];
+      if(segs[i].joined||hav(en,st)<JOIN)parts.push({kind:'road',pts:[en,st]});
+      else{const c=await connector(en,st);if(seq!==planSeq)return;parts.push({kind:c.road?'road':'gap',pts:c.pts})}}
+    parts.push({kind:segs[i].type,pts:segs[i].pts});
   }
   planLayer.clearLayers();
   const col=cssVar('var(--route)');let full=[],lane=0,road=0,gaps=0;
@@ -619,7 +649,7 @@ async function renderPlan(){
     if(p.kind==='gap'){L.polyline(p.pts,{color:cssVar('var(--nomotor)'),weight:3,dashArray:'4 6',interactive:false}).addTo(planLayer);gaps++}
     full=full.concat(full.length?p.pts.slice(1):p.pts);
   }
-  its.forEach((it,i)=>L.marker(it.pts[0],{interactive:false,icon:L.divIcon({className:'plan-num',html:'<span>'+(i+1)+'</span>',iconSize:null})}).addTo(planLayer));
+  segs.forEach((it,i)=>L.marker(it.pts[0],{interactive:false,icon:L.divIcon({className:'plan-num',html:'<span>'+(i+1)+'</span>',iconSize:null})}).addTo(planLayer));
   plan.full=full;
   $('planDist').textContent=fmtDist(pathLen(full))+' · '+its.length+' stop'+(its.length>1?'s':'');
   $('planSub').textContent=fmtDist(lane)+' on lanes, '+fmtDist(road)+' on roads'+(gaps?' · '+gaps+' gap'+(gaps>1?'s':'')+' with no road route (red)':'');
