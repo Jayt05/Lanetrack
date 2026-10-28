@@ -187,6 +187,7 @@ input[type=file]{display:none}
 
 <div id="toast" hidden></div>
 
+<script src="vendor/capacitor.js"></script>
 <script src="vendor/leaflet.js"></script>
 <script src="vendor/leaflet-rotate.js"></script>
 <script>
@@ -196,9 +197,12 @@ const store={
   set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
 };
 const $=id=>document.getElementById(id);
+window.addEventListener('error',e=>{try{toast('Error: '+e.message,6000)}catch(_){}});
+window.addEventListener('unhandledrejection',e=>{try{toast('Error: '+((e.reason&&e.reason.message)||e.reason),6000)}catch(_){}});
 /* ---------- Android app (Capacitor) ---------- */
 const NATIVE=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
-const plug=n=>NATIVE?window.Capacitor.registerPlugin(n):null;
+// plugins come from Capacitor's core library (vendor/capacitor.js); never let a missing plugin stop the map loading
+const plug=n=>{if(!NATIVE)return null;try{const reg=(window.capacitorExports&&capacitorExports.registerPlugin)||window.Capacitor.registerPlugin;return reg(n)}catch(e){console.error(e);return null}};
 const BG=plug('BackgroundGeolocation'),FS=plug('Filesystem'),SHARE=plug('Share'),APP=plug('App');
 function toast(msg,ms=2500){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,ms)}
 function ask(title,text,yes){return new Promise(r=>{$('cTitle').textContent=title;$('cText').textContent=text;$('cYes').textContent=yes||'OK';
@@ -247,6 +251,9 @@ const bases={
   sat:L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Imagery © Esri'})
 };
 let baseName=store.get('lt_base','topo');bases[baseName].addTo(map);
+let tileOk=0,tileBad=0,tileWarned=false;
+Object.values(bases).forEach(l=>{l.on('tileload',()=>tileOk++);l.on('tileerror',()=>{tileBad++;
+  if(!tileWarned&&tileBad>=6&&tileOk===0){tileWarned=true;toast('Map pictures aren\'t loading – check your signal, or try another map style in the menu',6000)}})});
 document.querySelectorAll('[data-base]').forEach(b=>{b.classList.toggle('on',b.dataset.base===baseName);
   b.onclick=()=>{map.removeLayer(bases[baseName]);baseName=b.dataset.base;bases[baseName].addTo(map);store.set('lt_base',baseName);
     document.querySelectorAll('[data-base]').forEach(x=>x.classList.toggle('on',x===b))}});
@@ -426,7 +433,7 @@ const me=L.marker([0,0],{interactive:false,keyboard:false,zIndexOffset:1000,
 const meAcc=L.circle([0,0],{radius:1,color:'#1a73e8',weight:1,fillOpacity:.12});
 let watchBg=false;
 function startWatch(){
-  if(NATIVE)return startNativeWatch();
+  if(NATIVE&&BG)return startNativeWatch();
   if(!navigator.geolocation){toast('Location not available on this device');return}
   if(watchId!==null)return;
   watchId=navigator.geolocation.watchPosition(onPos,e=>toast(e.code===1?'Location blocked – allow it in Settings › Safari › Location':'Waiting for GPS…'),
@@ -544,7 +551,7 @@ async function keepAwake(){try{if('wakeLock' in navigator&&!wake){wake=await nav
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&(rec||guide))keepAwake()});
 
 function setMode(){
-  if(NATIVE)startNativeWatch();
+  if(NATIVE&&BG)startNativeWatch();
   const m=$('mode');m.className='';
   if(rec){m.textContent='● Recording';m.classList.add('rec')}
   else if(guide){m.textContent=guide.reverse?'Returning':'Following';m.classList.add('ret')}
@@ -595,7 +602,7 @@ function exportGpx(t){
   const x=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const gpx='<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="LaneTrack" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>'+x(t.name)+'</name><trkseg>'+
     t.pts.map(p=>'<trkpt lat="'+p[0]+'" lon="'+p[1]+'">'+(p[2]?'<time>'+new Date(p[2]*1000).toISOString()+'</time>':'')+'</trkpt>').join('')+'</trkseg></trk></gpx>';
-  if(NATIVE){shareGpxNative(t.name.replace(/[^\w-]+/g,'_')+'.gpx',gpx);return}
+  if(NATIVE&&FS&&SHARE){shareGpxNative(t.name.replace(/[^\w-]+/g,'_')+'.gpx',gpx);return}
   const blob=new Blob([gpx],{type:'application/gpx+xml'});
   const f=new File([blob],t.name.replace(/[^\w-]+/g,'_')+'.gpx',{type:'application/gpx+xml'});
   if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).catch(()=>{});return}
@@ -793,13 +800,13 @@ $('btnClose').onclick=()=>$('menu').hidden=true;
 {const v=store.get('lt_thresh',null);if(v)$('optThresh').value=v;$('optThresh').onchange=()=>store.set('lt_thresh',$('optThresh').value)}
 
 /* ---------- Android back button: close whatever is open, otherwise send the app to the background ---------- */
-if(NATIVE)APP.addListener('backButton',()=>{
+if(NATIVE&&APP)try{APP.addListener('backButton',()=>{
   if(!$('confirm').hidden){$('cNo').click();return}
   if(!$('menu').hidden){$('menu').hidden=true;return}
   if(map._popup&&map.hasLayer(map._popup)){map.closePopup();return}
   if(plan){$('pClose').click();return}
   APP.minimizeApp();
-});
+});}catch(e){console.error(e)}
 
 /* ---------- resume an unfinished recording (e.g. Safari reloaded the page) ---------- */
 const act=store.get('lt_active',null);
