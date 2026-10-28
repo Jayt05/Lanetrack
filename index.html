@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="LaneTrack">
 <meta name="theme-color" content="#1d241c">
 <title>LaneTrack</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Barlow:wght@400;600&display=swap">
 <style>
@@ -147,6 +147,7 @@ input[type=file]{display:none}
 <div id="menu" class="sheet" hidden>
   <h2>LaneTrack</h2>
   <div class="row"><button id="btnPlan" class="primary">Plan a route</button></div>
+  <p class="note web-only">Android? <a href="https://github.com/Jayt05/Lanetrack/releases/latest/download/LaneTrack.apk" target="_blank" rel="noopener">Download the LaneTrack app</a> – it keeps recording with the screen off.</p>
   <h3>Map</h3>
   <div class="row">
     <button data-base="topo">Topo</button>
@@ -186,8 +187,8 @@ input[type=file]{display:none}
 
 <div id="toast" hidden></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/leaflet-rotate.js"></script>
 <script>
 /* ---------- storage ---------- */
 const store={
@@ -195,6 +196,10 @@ const store={
   set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
 };
 const $=id=>document.getElementById(id);
+/* ---------- Android app (Capacitor) ---------- */
+const NATIVE=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
+const plug=n=>NATIVE?window.Capacitor.registerPlugin(n):null;
+const BG=plug('BackgroundGeolocation'),FS=plug('Filesystem'),SHARE=plug('Share'),APP=plug('App');
 function toast(msg,ms=2500){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,ms)}
 function ask(title,text,yes){return new Promise(r=>{$('cTitle').textContent=title;$('cText').textContent=text;$('cYes').textContent=yes||'OK';
   $('confirm').hidden=false;$('cYes').onclick=()=>{$('confirm').hidden=true;r(true)};$('cNo').onclick=()=>{$('confirm').hidden=true;r(false)}})}
@@ -419,11 +424,35 @@ const me=L.marker([0,0],{interactive:false,keyboard:false,zIndexOffset:1000,
   icon:L.divIcon({className:'me-icon',iconSize:[44,44],iconAnchor:[22,22],
     html:'<div class="me"><svg viewBox="0 0 44 44"><path class="me-cone" d="M22 2 L30 18 A9 9 0 0 0 14 18 Z"/><circle cx="22" cy="22" r="9" fill="#1a73e8" stroke="#fff" stroke-width="3"/><path class="me-arrow" d="M22 15 L27 26 L22 23 L17 26 Z" fill="#fff"/></svg></div>'})});
 const meAcc=L.circle([0,0],{radius:1,color:'#1a73e8',weight:1,fillOpacity:.12});
+let watchBg=false;
 function startWatch(){
+  if(NATIVE)return startNativeWatch();
   if(!navigator.geolocation){toast('Location not available on this device');return}
   if(watchId!==null)return;
   watchId=navigator.geolocation.watchPosition(onPos,e=>toast(e.code===1?'Location blocked – allow it in Settings › Safari › Location':'Waiting for GPS…'),
     {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}
+/* In the app, recording and route guidance keep running with the screen off (Android shows a notification). */
+let nativeStarting=false;
+async function startNativeWatch(){
+  const bg=!!(rec||guide);
+  if(nativeStarting||(watchId!==null&&watchBg===bg))return;
+  nativeStarting=true;
+  try{
+    if(watchId!==null){await BG.removeWatcher({id:watchId});watchId=null}
+    const opts={requestPermissions:true,stale:false,distanceFilter:0};
+    if(bg){opts.backgroundTitle='LaneTrack';opts.backgroundMessage=rec?'Recording your ride':'Guiding you along your route'}
+    watchId=await BG.addWatcher(opts,(loc,err)=>{
+      if(err){
+        if(err.code==='NOT_AUTHORIZED'){toast('LaneTrack needs location access – opening settings',3500);setTimeout(()=>BG.openSettings(),1500)}
+        return;
+      }
+      if(!loc)return;
+      onPos({coords:{latitude:loc.latitude,longitude:loc.longitude,accuracy:loc.accuracy,speed:loc.speed,heading:loc.bearing},timestamp:loc.time||Date.now()});
+    });
+    watchBg=bg;
+  }catch(e){toast('Couldn\'t start GPS: '+(e.message||e))}
+  nativeStarting=false;
 }
 function onPos(p){
   pos=[p.coords.latitude,p.coords.longitude];acc=p.coords.accuracy;speed=p.coords.speed;
@@ -515,6 +544,7 @@ async function keepAwake(){try{if('wakeLock' in navigator&&!wake){wake=await nav
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&(rec||guide))keepAwake()});
 
 function setMode(){
+  if(NATIVE)startNativeWatch();
   const m=$('mode');m.className='';
   if(rec){m.textContent='● Recording';m.classList.add('rec')}
   else if(guide){m.textContent=guide.reverse?'Returning':'Following';m.classList.add('ret')}
@@ -528,7 +558,7 @@ $('btnRec').onclick=async()=>{
   if(guide){if(await ask('End route?','Stop following this route.','End'))endGuide();return}
   if(!rec){
     rec={id:Date.now(),name:new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}),start:Date.now()/1000,pts:[]};
-    trackLine.setLatLngs([]);startWatch();keepAwake();store.set('lt_active',rec);setMode();toast('Recording – keep the screen on');
+    trackLine.setLatLngs([]);startWatch();keepAwake();store.set('lt_active',rec);setMode();toast(NATIVE?'Recording – you can lock your phone':'Recording – keep the screen on');
   }else{
     if(!await ask('Stop recording?','The track is saved to your trips.','Stop'))return;
     saveTrip(rec);rec=null;store.set('lt_active',null);setMode();toast('Trip saved');
@@ -565,10 +595,17 @@ function exportGpx(t){
   const x=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const gpx='<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="LaneTrack" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>'+x(t.name)+'</name><trkseg>'+
     t.pts.map(p=>'<trkpt lat="'+p[0]+'" lon="'+p[1]+'">'+(p[2]?'<time>'+new Date(p[2]*1000).toISOString()+'</time>':'')+'</trkpt>').join('')+'</trkseg></trk></gpx>';
+  if(NATIVE){shareGpxNative(t.name.replace(/[^\w-]+/g,'_')+'.gpx',gpx);return}
   const blob=new Blob([gpx],{type:'application/gpx+xml'});
   const f=new File([blob],t.name.replace(/[^\w-]+/g,'_')+'.gpx',{type:'application/gpx+xml'});
   if(navigator.canShare&&navigator.canShare({files:[f]})){navigator.share({files:[f]}).catch(()=>{});return}
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=f.name;document.body.appendChild(a);a.click();a.remove();
+}
+async function shareGpxNative(name,text){
+  try{
+    const r=await FS.writeFile({path:name,data:text,directory:'CACHE',encoding:'utf8'});
+    await SHARE.share({title:name,files:[r.uri],dialogTitle:'Send GPX'});
+  }catch(e){if(!/cancel/i.test(e.message||''))toast('Couldn\'t export: '+(e.message||e))}
 }
 $('btnImport').onclick=()=>$('fileGpx').click();
 $('fileGpx').onchange=async e=>{
@@ -755,9 +792,19 @@ $('btnClose').onclick=()=>$('menu').hidden=true;
 ['optLanes','optNoMotor','optBeep','optLabels'].forEach(id=>{const v=store.get('lt_'+id,null);if(v!==null)$(id).checked=v;$(id).addEventListener('change',()=>store.set('lt_'+id,$(id).checked))});
 {const v=store.get('lt_thresh',null);if(v)$('optThresh').value=v;$('optThresh').onchange=()=>store.set('lt_thresh',$('optThresh').value)}
 
+/* ---------- Android back button: close whatever is open, otherwise send the app to the background ---------- */
+if(NATIVE)APP.addListener('backButton',()=>{
+  if(!$('confirm').hidden){$('cNo').click();return}
+  if(!$('menu').hidden){$('menu').hidden=true;return}
+  if(map._popup&&map.hasLayer(map._popup)){map.closePopup();return}
+  if(plan){$('pClose').click();return}
+  APP.minimizeApp();
+});
+
 /* ---------- resume an unfinished recording (e.g. Safari reloaded the page) ---------- */
 const act=store.get('lt_active',null);
 if(act&&act.pts){rec=act;trackLine.setLatLngs(rec.pts);updateStats();startWatch();toast('Resumed your recording')}
+if(NATIVE)document.querySelectorAll('.web-only').forEach(e=>e.hidden=true);
 setMode();startWatch();loadLanes();
 </script>
 </body>

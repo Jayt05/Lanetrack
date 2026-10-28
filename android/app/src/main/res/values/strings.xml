@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LaneTrack</string>
+    <string name="title_activity_main">LaneTrack</string>
+    <string name="package_name">uk.lanetrack.app</string>
+    <string name="custom_url_scheme">uk.lanetrack.app</string>
+</resources>

@@ -1,0 +1,10 @@
+{
+  "appId": "uk.lanetrack.app",
+  "appName": "LaneTrack",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#1d241c",
+    "adjustMarginsForEdgeToEdge": "force"
+  }
+}

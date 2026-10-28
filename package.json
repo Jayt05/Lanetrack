@@ -1,0 +1,21 @@
+{
+  "name": "lanetrack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LaneTrack green lane tracker – Android app wrapper",
+  "scripts": {
+    "build:web": "node tools/build_www.js",
+    "sync": "npm run build:web && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor-community/background-geolocation": "1.3.1",
+    "@capacitor/android": "7.6.10",
+    "@capacitor/app": "7",
+    "@capacitor/core": "7.6.10",
+    "@capacitor/filesystem": "7",
+    "@capacitor/share": "7"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.10"
+  }
+}
