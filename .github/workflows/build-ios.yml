@@ -1,8 +1,12 @@
 name: Build iOS app
 
-# Builds an UNSIGNED LaneTrack.ipa and attaches it to the "ios" release:
-# https://github.com/Jayt05/Lanetrack/releases/download/ios/LaneTrack.ipa
-# Install it with Sideloadly or AltStore, which sign it with your Apple ID.
+# 1. Always: builds an UNSIGNED LaneTrack.ipa (checks the app compiles) and attaches it to the "ios" release.
+# 2. When the Apple secrets below are set: builds a signed version and uploads it to TestFlight.
+#    Repo secrets needed (Settings > Secrets and variables > Actions):
+#      APPLE_TEAM_ID   – 10-character Team ID (developer.apple.com > Membership)
+#      ASC_KEY_ID      – App Store Connect API key ID
+#      ASC_ISSUER_ID   – App Store Connect API issuer ID
+#      ASC_KEY_P8      – full text of the downloaded AuthKey_XXXX.p8 file
 on:
   workflow_dispatch:
   push:
@@ -30,7 +34,9 @@ concurrency:
 jobs:
   ipa:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 50
+    env:
+      HAS_ASC: ${{ secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,3 +77,35 @@ jobs:
             --notes "Unsigned iPhone build. Install LaneTrack.ipa with Sideloadly or AltStore using your Apple ID. Updated automatically on every change."
           gh release upload ios LaneTrack.ipa --clobber
           gh release edit ios --notes "Unsigned iPhone build 1.0.${{ github.run_number }} from commit ${GITHUB_SHA::7}. Install LaneTrack.ipa with Sideloadly or AltStore using your Apple ID."
+
+      - name: Signed build and upload to TestFlight
+        if: env.HAS_ASC == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s\n' "$ASC_KEY_P8" > "$KEY"
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/LaneTrack.xcarchive \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} MARKETING_VERSION=1.0.${{ github.run_number }} \
+            "${AUTH[@]}" archive | tail -40
+          cat > ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath build/LaneTrack.xcarchive \
+            -exportOptionsPlist ExportOptions.plist -exportPath build/export "${AUTH[@]}"
+          rm -f "$KEY"
+          echo "Uploaded build ${{ github.run_number }} to TestFlight. It appears in TestFlight after Apple finishes processing (usually 10-30 minutes)." >> "$GITHUB_STEP_SUMMARY"
