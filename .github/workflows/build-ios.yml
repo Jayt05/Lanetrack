@@ -1,5 +1,4 @@
 name: Build iOS app
-# (GitHub Mac runners are sometimes busy; a run that never starts can just be re-run.)
 
 # 1. Always: builds an UNSIGNED LaneTrack.ipa (checks the app compiles) and attaches it to the "ios" release.
 # 2. When the Apple secrets below are set: builds a signed version and uploads it to TestFlight.
@@ -9,21 +8,9 @@ name: Build iOS app
 #      ASC_ISSUER_ID   – App Store Connect API issuer ID
 #      ASC_KEY_P8      – full text of the downloaded AuthKey_XXXX.p8 file
 on:
+  # Manual only for now: GitHub's Mac machines are often unavailable, and the app is built in Xcode instead.
+  # Run it from the Actions tab (Build iOS app > Run workflow) when you want a cloud build or TestFlight upload.
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - index.html
-      - vendor/**
-      - ios/**
-      - package.json
-      - package-lock.json
-      - capacitor.config.json
-      - tools/build_www.js
-      - .github/workflows/build-ios.yml
-  workflow_run:
-    workflows: ["Build lane data"]
-    types: [completed]
 
 permissions:
   contents: write
