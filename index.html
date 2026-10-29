@@ -629,11 +629,12 @@ $('fileGpx').onchange=async e=>{
 let guide=null;
 const routeLine=L.polyline([],{color:cssVar('var(--route)'),weight:8,opacity:.75}).addTo(map);
 const doneLine=L.polyline([],{color:'#888',weight:8,opacity:.5}).addTo(map);
+const approachLine=L.polyline([],{color:cssVar('var(--ucr)'),weight:6,opacity:.9,dashArray:'1 10',lineCap:'round',interactive:false}).addTo(map);
 const toRoute=L.polyline([],{color:cssVar('var(--nomotor)'),weight:4,dashArray:'4 8'}).addTo(map);
 const endMark=L.circleMarker([0,0],{radius:10,color:'#fff',weight:3,fillColor:cssVar('var(--boat)'),fillOpacity:1});
 function startGuide(trip,reverse){
   const pts=trip.pts.map(p=>[p[0],p[1]]);if(reverse)pts.reverse();
-  guide={trip,reverse,pts,cum:cumulative(pts),wasOff:false,best:0};
+  guide={trip,reverse,pts,cum:cumulative(pts),wasOff:false,best:0,approach:null,apFetching:false,apLast:0};
   trackLine.setLatLngs([]);routeLine.setLatLngs(pts);doneLine.setLatLngs([]);
   endMark.setLatLng(pts[pts.length-1]).addTo(map).bindTooltip(reverse?'Start point':'End',{permanent:false});
   map.fitBounds(routeLine.getBounds(),{padding:[40,40]});follow=true;
@@ -641,31 +642,62 @@ function startGuide(trip,reverse){
   $('sDist').textContent=miles(guide.cum[guide.cum.length-1]).toFixed(2);
   if(pos)updateGuide();else $('guideText').innerHTML='<b>Finding you…</b><span>Waiting for GPS</span>';
 }
-function endGuide(){guide=null;routeLine.setLatLngs([]);doneLine.setLatLngs([]);toRoute.setLatLngs([]);map.removeLayer(endMark);$('guide').hidden=true;setMode()}
+function endGuide(){guide=null;approachLine.setLatLngs([]);routeLine.setLatLngs([]);doneLine.setLatLngs([]);toRoute.setLatLngs([]);map.removeLayer(endMark);$('guide').hidden=true;setMode()}
+/* Getting to the route: when you're well away from it, fetch a road route to where you should join
+   (the start, or the next point along if you've already ridden some of it) and guide along that. */
+const APPROACH_MIN=150;   // metres off the route before a road route is worth fetching
+async function fetchApproach(target){
+  const g=guide;if(!g||g.apFetching)return;
+  g.apFetching=true;g.apLast=Date.now();
+  const from=[+pos[0].toFixed(5),+pos[1].toFixed(5)],to=[+target[0].toFixed(5),+target[1].toFixed(5)];
+  const c=await connector(from,to);
+  if(guide!==g)return;
+  g.apFetching=false;
+  if(c.road&&c.pts.length>2){g.approach={pts:c.pts,cum:cumulative(c.pts),target};approachLine.setLatLngs(c.pts)}
+  else{g.approach=null;approachLine.setLatLngs([])}
+  if(pos)updateGuide();
+}
 function updateGuide(){
   const g=guide,n=nearest(pos,g.pts,g.cum),total=g.cum[g.cum.length-1],thresh=+$('optThresh').value;
   // only allow forward progress (stops a loop that crosses itself jumping you backwards)
   if(n.d<thresh)g.best=Math.max(g.best,n.along);
-  const off=n.d>thresh,remaining=total-(off?n.along:g.best);
-  doneLine.setLatLngs(g.pts.slice(0,n.i+1).concat([n.pt]));
-  $('sDist').textContent=miles(remaining).toFixed(2);
-  let target,title,sub;
+  const off=n.d>thresh;
+  // where to join: the start if you haven't begun, otherwise just ahead of how far you'd got
+  const joinAt=g.best<50?0:g.best,join=pointAt(g.pts,g.cum,joinAt);
+  let remaining=total-(off?joinAt:g.best);
+  doneLine.setLatLngs(g.best>0?g.pts.slice(0,n.i+1).concat([n.pt]):[]);
+  let target,title,sub,ap=null;
   if(off){
-    target=n.pt;toRoute.setLatLngs([pos,n.pt]);
-    title=fmtDist(n.d)+' off route';sub='Head '+compass(bearing(pos,target))+' to rejoin your track';
+    // keep the road route if you're still on it and it leads to the same join point
+    if(g.approach){const a=nearest(pos,g.approach.pts,g.approach.cum);
+      if(a.d<Math.max(thresh*2,60)&&hav(g.approach.target,join)<100)ap=a;else{g.approach=null;approachLine.setLatLngs([])}}
+    if(!ap&&hav(pos,join)>APPROACH_MIN&&!g.apFetching&&Date.now()-g.apLast>20000)fetchApproach(join);
+  }else if(g.approach){g.approach=null;approachLine.setLatLngs([])}
+  if(off&&ap){
+    const A=g.approach,left=A.cum[A.cum.length-1]-ap.along;
+    remaining+=left;toRoute.setLatLngs([]);
+    target=pointAt(A.pts,A.cum,ap.along+40);
+    title=fmtDist(left)+(joinAt===0?' to the start':' to rejoin');
+    sub='Follow the blue road route · '+fmtDist(remaining)+' in total';
+  }else if(off){
+    target=join;toRoute.setLatLngs([pos,join]);
+    title=fmtDist(hav(pos,join))+(joinAt===0?' to the start':' off route');
+    sub=g.apFetching?'Finding a road route…':'Head '+compass(bearing(pos,target))+(joinAt===0?' to the start of the route':' to rejoin your track');
   }else{
     toRoute.setLatLngs([]);target=pointAt(g.pts,g.cum,g.best+40);
     title=fmtDist(remaining)+' to go';sub=g.reverse?'On your track – heading back':'On route';
   }
+  $('sDist').textContent=miles(remaining).toFixed(2);
   if(remaining<25&&!off){title='You\'re back!';sub=g.reverse?'You\'ve reached where you started':'End of route'}
   let b=bearing(pos,target);
   g.arrowBearing=b;$('arrow').style.transform='rotate('+(b+mapBearing())+'deg)';
   $('guideText').innerHTML='<b></b><span></span>';$('guideText').querySelector('b').textContent=title;$('guideText').querySelector('span').textContent=sub;
-  $('guide').classList.toggle('off',off);
-  if(off&&!g.wasOff&&$('optBeep').checked)beep();
-  g.wasOff=off;
+  // red "off route" only when you've left the route part-way; heading to it on a road route is normal
+  const lost=off&&!ap&&g.best>0;
+  $('guide').classList.toggle('off',lost);
+  if(lost&&!g.wasOff&&$('optBeep').checked)beep();
+  g.wasOff=lost;
 }
-
 
 /* ---------- route planner: chain lanes together, roads in between ---------- */
 let plan=null;
