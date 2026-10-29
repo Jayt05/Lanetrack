@@ -1,4 +1,5 @@
 name: Build iOS app
+# (GitHub Mac runners are sometimes busy; a run that never starts can just be re-run.)
 
 # 1. Always: builds an UNSIGNED LaneTrack.ipa (checks the app compiles) and attaches it to the "ios" release.
 # 2. When the Apple secrets below are set: builds a signed version and uploads it to TestFlight.
