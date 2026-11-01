@@ -54,6 +54,13 @@ body{background:var(--bg);color:var(--ink);font:15px/1.4 var(--body);overflow:hi
 #arrow{width:52px;height:52px;flex:none;transition:transform .3s}
 #guideText b{font:700 22px/1.1 var(--display);display:block}
 #guideText span{color:var(--muted);font-size:13px}
+#guideText{flex:1;min-width:0}
+#btnEndGuide{flex:none;width:44px;height:44px;min-height:44px;padding:0;font-size:20px;box-shadow:none;background:transparent;color:var(--muted)}
+#btnRecentre{position:fixed;left:50%;transform:translateX(-50%);z-index:1001;bottom:calc(env(safe-area-inset-bottom,0px) + 92px);
+  min-height:48px;padding:0 22px;border-radius:24px;background:var(--accent);color:#fff;font-size:18px;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+#plan:not([hidden])~#btnRecentre{bottom:calc(env(safe-area-inset-bottom,0px) + 150px)}
+.popbtns{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.popbtn.alt{background:var(--panel);color:var(--ink);border:1px solid var(--line)}
 
 /* Controls */
 #controls{position:fixed;left:0;right:0;bottom:0;z-index:1000;
@@ -111,7 +118,7 @@ input[type=file]{display:none}
 #plan .row button{min-height:52px}
 .plan-num span{display:inline-block;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--panel);
   border:2px solid #fff;font:700 15px/22px var(--display);text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.4)}
-.popbtn{min-height:36px;font-size:14px;padding:0 10px;background:var(--accent);color:#fff;box-shadow:none}
+.popbtn{min-height:44px;font-size:15px;padding:0 10px;background:var(--accent);color:#fff;box-shadow:none}
 .lane-label span{font-size:12px!important;padding:0 5px!important}
 </style>
 </head>
@@ -128,6 +135,7 @@ input[type=file]{display:none}
 <div id="guide" hidden>
   <svg id="arrow" viewBox="0 0 52 52"><circle cx="26" cy="26" r="25" fill="var(--route)"/><path d="M26 8 L38 38 L26 31 L14 38 Z" fill="#fff"/></svg>
   <div id="guideText"><b>–</b><span>–</span></div>
+  <button id="btnEndGuide" aria-label="End navigation">✕</button>
 </div>
 <div id="loading" hidden></div>
 <button id="btnNorth" hidden aria-label="Point map north"><svg viewBox="0 0 40 40"><path d="M20 4 L27 20 L13 20 Z" fill="var(--nomotor)"/><path d="M20 36 L27 20 L13 20 Z" fill="var(--muted)"/><text x="20" y="17" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">N</text></svg></button>
@@ -143,6 +151,8 @@ input[type=file]{display:none}
   <div><b id="planDist">Tap a lane to start</b><span id="planSub"></span></div>
   <div class="row"><button id="pUndo">Undo</button><button id="pClear">Clear</button><button id="pClose">Close</button><button id="pSave" class="primary">Save</button></div>
 </div>
+
+<button id="btnRecentre" hidden>Re-centre</button>
 
 <div id="menu" class="sheet" hidden>
   <h2>LaneTrack</h2>
@@ -288,7 +298,7 @@ function laneInfo(id){
   const w=ways.get(id),t=w.tags,rows=[['Status',NAMES[w.cls]],['Name',t.name],['Ref',laneRef(t)],['Surface',t.surface],['Track grade',t.tracktype],
     ['Motor vehicles',t.motor_vehicle],['Conditional',t['motor_vehicle:conditional']||t['vehicle:conditional']],['Note',t.note]].filter(r=>r[1]);
   return '<b>'+rows.map(r=>r[0]+':</b> '+esc(r[1])).join('<br><b>')+
-    '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="popbtn" onclick="planFrom('+id+')">Plan route from here</button>'+
+    '<div class="popbtns"><button class="popbtn" onclick="navToLane('+id+')">Navigate to this lane</button><button class="popbtn alt" onclick="planFrom('+id+')">Plan route from here</button>'+
     '<a href="https://www.openstreetmap.org/way/'+id+'" target="_blank" rel="noopener">OSM</a></div>';
 }
 function onLaneTap(id,e){
@@ -482,7 +492,7 @@ function setHeading(h,k){heading=heading==null?h:(heading+angDiff(heading,h)*k+3
 function scheduleRotate(){if(rotPending)return;rotPending=true;requestAnimationFrame(applyRotate)}
 function applyRotate(){
   rotPending=false;
-  if(headingUp&&heading!=null&&Math.abs(angDiff(-mapBearing(),heading))>1.5){
+  if(follow&&headingUp&&heading!=null&&Math.abs(angDiff(-mapBearing(),heading))>1.5){
     map.setBearing(-heading);if(follow&&pos)map.panTo(pos,{animate:false});
   }
   const el=me.getElement&&me.getElement();
@@ -509,7 +519,7 @@ async function startCompass(){
     window.addEventListener('deviceorientationabsolute',onCompass);window.addEventListener('deviceorientation',onCompass);compassOn=true;
   }catch(e){}
 }
-function setCentreBtn(){const b=$('btnCentre');b.classList.toggle('on',follow);b.innerHTML=headingUp?ICON_HEAD:ICON_CROSS;
+function setCentreBtn(){const b=$('btnCentre');b.classList.toggle('on',follow);$('btnRecentre').hidden=follow||!pos;b.innerHTML=headingUp?ICON_HEAD:ICON_CROSS;
   b.setAttribute('aria-label',headingUp?'Map follows your direction':'Map points north')}
 function setHeadingUp(on){
   headingUp=on;store.set('lt_headup',on);
@@ -517,14 +527,35 @@ function setHeadingUp(on){
   else{map.setBearing(0);toast('North up',1500)}
   setCentreBtn();
 }
-map.on('dragstart',()=>{follow=false;setCentreBtn()});
+let lastTouch=0;
+const RESUME_MS=10000;   // after you stop touching the map, follow you again (while moving, recording or navigating)
+function noteTouch(){lastTouch=Date.now()}
+map.getContainer().addEventListener('touchstart',noteTouch,{passive:true});
+map.getContainer().addEventListener('mousedown',noteTouch);
+map.getContainer().addEventListener('wheel',noteTouch,{passive:true});
+map.on('dragstart',()=>{noteTouch();follow=false;setCentreBtn()});
+map.on('zoomstart',()=>{if(Date.now()-lastTouch<1500&&follow)noteTouch()});
+function resumeFollow(){
+  follow=true;setCentreBtn();
+  if(pos)map.setView(pos,map.getZoom(),{animate:false});
+  scheduleRotate();
+}
+function autoResume(){
+  if(follow||!pos)return;
+  const moving=speed!=null&&speed>2;
+  if((rec||guide||moving)&&Date.now()-lastTouch>RESUME_MS)resumeFollow();
+}
+setInterval(autoResume,2000);
 // tap once to follow you; tap again to switch between north-up and direction-up
 $('btnCentre').onclick=()=>{
   startWatch();
   if(follow)setHeadingUp(!headingUp);
   else{follow=true;setCentreBtn();if(headingUp)startCompass()}
-  if(pos)map.setView(pos,Math.max(map.getZoom(),15));
+  if(pos)map.setView(pos,Math.max(map.getZoom(),15),{animate:false});
+  scheduleRotate();
 };
+$('btnEndGuide').onclick=async()=>{if(await ask('End route?','Stop navigating. Any recording carries on.','End'))endGuide()};
+$('btnRecentre').onclick=()=>{startWatch();resumeFollow();if(pos&&map.getZoom()<14)map.setZoom(15)};
 $('btnNorth').onclick=()=>{if(headingUp)setHeadingUp(false);else map.setBearing(0)};
 setCentreBtn();
 
@@ -562,7 +593,7 @@ function setMode(){
 }
 $('btnRec').onclick=async()=>{
   initAudio();
-  if(guide){if(await ask('End route?','Stop following this route.','End'))endGuide();return}
+  if(guide&&!rec){if(await ask('End route?','Stop following this route.','End'))endGuide();return}
   if(!rec){
     rec={id:Date.now(),name:new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}),start:Date.now()/1000,pts:[]};
     trackLine.setLatLngs([]);startWatch();keepAwake();store.set('lt_active',rec);setMode();toast(NATIVE?'Recording – you can lock your phone':'Recording – keep the screen on');
@@ -635,7 +666,7 @@ const endMark=L.circleMarker([0,0],{radius:10,color:'#fff',weight:3,fillColor:cs
 function startGuide(trip,reverse){
   const pts=trip.pts.map(p=>[p[0],p[1]]);if(reverse)pts.reverse();
   guide={trip,reverse,pts,cum:cumulative(pts),wasOff:false,best:0,approach:null,apFetching:false,apLast:0};
-  trackLine.setLatLngs([]);routeLine.setLatLngs(pts);doneLine.setLatLngs([]);
+  if(!rec)trackLine.setLatLngs([]);routeLine.setLatLngs(pts);doneLine.setLatLngs([]);
   endMark.setLatLng(pts[pts.length-1]).addTo(map).bindTooltip(reverse?'Start point':'End',{permanent:false});
   map.fitBounds(routeLine.getBounds(),{padding:[40,40]});follow=true;
   $('guide').hidden=false;startWatch();keepAwake();setMode();
@@ -805,6 +836,17 @@ function startPlan(){
   plan={items:[],full:[]};$('menu').hidden=true;$('controls').hidden=true;$('plan').hidden=false;map.closePopup();renderPlan();
 }
 function endPlan(){plan=null;planLayer.clearLayers();$('plan').hidden=true;$('controls').hidden=false}
+/* Navigate to a lane you tap: road route to its nearest end, then guidance along the lane.
+   Works while recording – the recording carries on. */
+window.navToLane=id=>{
+  map.closePopup();
+  if(plan){toast('Close the route planner first');return}
+  const c=laneChain(id);let pts=c.pts.slice();
+  if(pos&&hav(pos,pts[pts.length-1])<hav(pos,pts[0]))pts.reverse();
+  if(guide)endGuide();
+  startGuide({id:'lane-'+id,name:c.name,pts},false);
+  toast('Navigating to '+c.name,2000);
+};
 window.planFrom=id=>{map.closePopup();if(!plan)startPlan();if(plan)addLane(id)};
 map.on('click',e=>{if(plan)addPlanPoint(e.latlng)});
 $('btnPlan').onclick=startPlan;
