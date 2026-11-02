@@ -83,10 +83,15 @@ button.on{outline:3px solid var(--accent)}
 .sheet h3{font:700 15px var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:16px 0 6px}
 .row{display:flex;gap:8px;flex-wrap:wrap}
 .row button{flex:1;min-height:48px;font-size:16px}
-.trip{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
-.trip div{flex:1;min-width:0}
+.trip{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.trip-name{flex:1 1 100%;min-width:0;text-align:left;background:none;box-shadow:none;padding:4px 0;min-height:44px;font:inherit;letter-spacing:normal;text-transform:none;color:var(--ink)}
+.trip-name b{display:block;font:700 17px/1.2 var(--body);overflow-wrap:anywhere}
+.sheet.top{top:0;bottom:auto;z-index:2100;border-radius:0 0 16px 16px;padding-top:calc(env(safe-area-inset-top,0px) + 16px)}
+#renameInput{width:100%;font:16px var(--body);padding:12px;margin:0 0 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
 .trip small{color:var(--muted);display:block}
 .trip button{min-height:44px;padding:0 12px;font-size:15px}
+.trip button:not(.trip-name){flex:1}
+.trip button:last-child:not(.trip-name){flex:0 0 52px}
 .key{display:grid;grid-template-columns:28px 1fr;gap:6px 10px;align-items:center;font-size:14px}
 .key i{height:5px;border-radius:3px;display:block}
 label.tog{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:16px}
@@ -189,6 +194,12 @@ input[type=file]{display:none}
   <input type="file" id="fileGpx" accept=".gpx,application/gpx+xml,text/xml">
 </div>
 
+<form id="rename" class="sheet top" hidden>
+  <h2>Rename</h2>
+  <input id="renameInput" type="text" maxlength="60" autocomplete="off" enterkeyhint="done" aria-label="Name">
+  <div class="row"><button type="button" id="rnCancel">Cancel</button><button type="submit" class="primary">Save</button></div>
+</form>
+
 <div id="confirm" class="sheet" hidden>
   <h2 id="cTitle"></h2>
   <p id="cText" class="note" style="font-size:15px"></p>
@@ -215,6 +226,14 @@ const NATIVE=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capa
 const plug=n=>{if(!NATIVE)return null;try{const reg=(window.capacitorExports&&capacitorExports.registerPlugin)||window.Capacitor.registerPlugin;return reg(n)}catch(e){console.error(e);return null}};
 const BG=plug('BackgroundGeolocation'),FS=plug('Filesystem'),SHARE=plug('Share'),APP=plug('App');
 function toast(msg,ms=2500){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,ms)}
+// Ask for a name; resolves to the trimmed name, or null if cancelled
+function askName(title,current){return new Promise(r=>{
+  const f=$('rename'),inp=$('renameInput');f.querySelector('h2').textContent=title;inp.value=current||'';f.hidden=false;
+  setTimeout(()=>{inp.focus();inp.select()},50);
+  const done=v=>{f.hidden=true;inp.blur();f.onsubmit=null;$('rnCancel').onclick=null;r(v)};
+  f.onsubmit=e=>{e.preventDefault();const v=inp.value.trim();done(v||null)};
+  $('rnCancel').onclick=()=>done(null);
+})}
 function ask(title,text,yes){return new Promise(r=>{$('cTitle').textContent=title;$('cText').textContent=text;$('cYes').textContent=yes||'OK';
   $('confirm').hidden=false;$('cYes').onclick=()=>{$('confirm').hidden=true;r(true)};$('cNo').onclick=()=>{$('confirm').hidden=true;r(false)}})}
 
@@ -618,8 +637,8 @@ function renderTrips(){
   if(!all.length){box.innerHTML='<p class="note">No trips yet. Press Start to record your first ride, or import a GPX file.</p>';return}
   all.forEach(t=>{
     const d=document.createElement('div');d.className='trip';
-    d.innerHTML='<div><b></b><small>'+fmtDist(pathLen(t.pts))+'</small></div>';
-    d.querySelector('b').textContent=t.name;
+    d.innerHTML='<button class="trip-name" aria-label="Rename"><b></b><small>'+fmtDist(pathLen(t.pts))+' · tap to rename ✎</small></button>';
+    d.querySelector('b').textContent=t.name;d.querySelector('.trip-name').onclick=()=>tripAction(t,'rename');
     [['Back','return'],['Follow','follow'],['GPX','gpx'],['✕','del']].forEach(([l,a])=>{
       const b=document.createElement('button');b.textContent=l;b.onclick=()=>tripAction(t,a);d.appendChild(b)});
     box.appendChild(d)});
@@ -627,6 +646,11 @@ function renderTrips(){
 async function tripAction(t,a){
   if(a==='return'||a==='follow'){if(rec){toast('Stop recording first');return}$('menu').hidden=true;startGuide(t,a==='return')}
   if(a==='gpx')exportGpx(t);
+  if(a==='rename'){
+    const name=await askName('Rename trip',t.name);
+    if(name&&name!==t.name){const all=trips(),x=all.find(y=>y.id===t.id);
+      if(x){x.name=name;store.set('lt_trips',all);if(guide&&guide.trip&&guide.trip.id===t.id)guide.trip.name=name;renderTrips();toast('Renamed',1200)}}
+  }
   if(a==='del'&&await ask('Delete trip?',t.name+' will be removed from this phone.','Delete')){store.set('lt_trips',trips().filter(x=>x.id!==t.id));renderTrips()}
 }
 function exportGpx(t){
@@ -856,6 +880,7 @@ $('pClose').onclick=async()=>{if(!plan.items.length||await ask('Close without sa
 $('pSave').onclick=async()=>{
   if(!plan||plan.full.length<2){toast('Add at least two stops');return}
   const t={id:Date.now(),name:'Route – '+(plan.items.filter(i=>i.type==='lane').map(i=>i.name).slice(0,3).join(', ')||new Date().toLocaleDateString('en-GB')),start:Date.now()/1000,pts:plan.full.map(p=>[p[0],p[1]])};
+  const nm=await askName('Name this route',t.name);if(nm)t.name=nm;
   saveTrip(t);endPlan();
   if(await ask('Route saved','Start following it now? You can also find it under Saved trips.','Follow now'))startGuide(t,false);
 };
@@ -875,6 +900,7 @@ $('btnClose').onclick=()=>$('menu').hidden=true;
 
 /* ---------- Android back button: close whatever is open, otherwise send the app to the background ---------- */
 if(NATIVE&&APP)try{APP.addListener('backButton',()=>{
+  if(!$('rename').hidden){$('rnCancel').click();return}
   if(!$('confirm').hidden){$('cNo').click();return}
   if(!$('menu').hidden){$('menu').hidden=true;return}
   if(map._popup&&map.hasLayer(map._popup)){map.closePopup();return}
